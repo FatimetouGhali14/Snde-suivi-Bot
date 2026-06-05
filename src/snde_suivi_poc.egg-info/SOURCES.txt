@@ -1,8 +1,13 @@
+README.md
 pyproject.toml
 src/__init__.py
 src/bot/__init__.py
+src/bot/main.py
 src/bot/handlers/__init__.py
+src/bot/handlers/ping.py
 src/core/__init__.py
+src/core/config.py
+src/core/schemas.py
 src/db/__init__.py
 src/parsers/__init__.py
 src/services/__init__.py
