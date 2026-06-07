@@ -24,3 +24,9 @@ tests/fixtures/*.xlsx
 
 # Logs
 *.log
+
+# Fichiers generes par pip install -e
+*.egg-info/
+src/*.egg-info/
+build/
+dist/
