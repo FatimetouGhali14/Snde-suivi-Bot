@@ -15,7 +15,7 @@ def trouver_par_chat_id(chat_id: int):
     cursor = conn.cursor()
     cursor.execute(
         """
-        SELECT matricule, nom_complet, direction_code, telegram_chat_id
+        SELECT id, matricule, nom_complet, direction_code, telegram_chat_id
         FROM directeurs
         WHERE telegram_chat_id = %s
         """,
@@ -25,10 +25,11 @@ def trouver_par_chat_id(chat_id: int):
     if row is None:
         return None
     return {
-        "matricule"        : row[0],
-        "nom_complet"      : row[1],
-        "direction_code"   : row[2],
-        "telegram_chat_id" : row[3],
+        "id"               : row[0],
+        "matricule"        : row[1],
+        "nom_complet"      : row[2],
+        "direction_code"   : row[3],
+        "telegram_chat_id" : row[4],
     }
 
 
@@ -38,7 +39,7 @@ def lister_tous():
     cursor = conn.cursor()
     cursor.execute(
         """
-        SELECT matricule, nom_complet, direction_code, telegram_chat_id
+        SELECT id, matricule, nom_complet, direction_code, telegram_chat_id
         FROM directeurs
         ORDER BY direction_code
         """
@@ -46,10 +47,11 @@ def lister_tous():
     rows = cursor.fetchall()
     return [
         {
-            "matricule"        : r[0],
-            "nom_complet"      : r[1],
-            "direction_code"   : r[2],
-            "telegram_chat_id" : r[3],
+            "id"               : r[0],
+            "matricule"        : r[1],
+            "nom_complet"      : r[2],
+            "direction_code"   : r[3],
+            "telegram_chat_id" : r[4],
         }
         for r in rows
     ]

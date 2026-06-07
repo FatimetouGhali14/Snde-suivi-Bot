@@ -163,7 +163,7 @@ async def handler_rapport_excel(
     chat_id   = update.effective_chat.id
     document  = update.message.document
     maintenant = datetime.now()
-    avant_22h  = maintenant.hour < 22
+    avant_21h  = maintenant.hour < 21
 
     if not document or not (document.file_name or "").endswith(".xlsx"):
         return
@@ -225,7 +225,7 @@ async def handler_rapport_excel(
             mettre_a_jour_statut(instruction_id, "fait")
 
         # Confirmation au directeur
-        statut_heure = "A L'HEURE ✅" if avant_22h else "EN RETARD 🟠"
+        statut_heure = "A L'HEURE" if avant_21h else "EN RETARD"
         await update.message.reply_text(
             f"Rapport enregistré\n"
             f"━━━━━━━━━━━━━━━━\n"
@@ -236,8 +236,8 @@ async def handler_rapport_excel(
         )
 
         # Notifier DG si retard
-        if not avant_22h:
-            retard = (maintenant.hour - 22) * 60 + maintenant.minute
+        if not avant_21h:
+            retard = (maintenant.hour - 21) * 60 + maintenant.minute
             await context.bot.send_message(
                 chat_id = settings.dg_chat_id,
                 text    = (
@@ -248,7 +248,25 @@ async def handler_rapport_excel(
                     f"KPIs : {verification['remplis']}/{verification['total']}"
                 )
             )
-
+    # Phase test : forwarder le rapport au DG à chaque envoi
+        await context.bot.send_message(
+            chat_id=settings.dg_chat_id,
+            text=(
+                f"Rapport recu de :\n"
+                f"Direction : {directeur['direction_code']}\n"
+                f"Nom : {directeur['nom_complet']}\n"
+                f"Heure : {maintenant.strftime('%H:%M')}\n"
+                f"Statut : {statut_heure}\n"
+                f"KPIs remplis : {verification['remplis']}/{verification['total']}"
+            )
+        )
+        
+        # Transferer aussi le fichier Excel au DG
+        await context.bot.send_document(
+            chat_id=settings.dg_chat_id,
+            document=document.file_id,
+            caption=f"Rapport {directeur['direction_code']} du {maintenant.strftime('%d/%m/%Y')}"
+        )
     except Exception as e:
         logger.error(f"Erreur rapport directeur : {e}")
         await update.message.reply_text(f"Erreur : {e}")
