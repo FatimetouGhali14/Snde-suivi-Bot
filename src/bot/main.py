@@ -28,6 +28,8 @@ from src.bot.handlers.ping import handler_ping
 from src.bot.handlers.whoami import handler_whoami
 from src.bot.handlers.excel import handler_rapport_excel
 from src.bot.handlers.rapport import handler_rapport
+from src.bot.handlers.modele import handler_modele
+from src.bot.handlers.synthese_cmd import handler_synthese
 from src.core.config import settings
 from src.db.pool import get_pool, fermer_pool
 
@@ -55,6 +57,26 @@ def construire_application() -> Application:
     application.add_handler(CommandHandler("ping", handler_ping))
     application.add_handler(CommandHandler("whoami", handler_whoami))
     application.add_handler(CommandHandler("rapport", handler_rapport))
+
+    # Nouvelles commandes
+    application.add_handler(CommandHandler("modele", handler_modele))
+    application.add_handler(CommandHandler("synthese", handler_synthese))
+
+    # Mots-clés (en complément des commandes)
+    # "excel" => envoi du modèle au directeur
+    application.add_handler(
+        MessageHandler(
+            filters.Regex(r"(?i)^excel$"),
+            handler_modele,
+        )
+    )
+    # "rapport" => synthèse au DG
+    application.add_handler(
+        MessageHandler(
+            filters.Regex(r"(?i)^rapport$"),
+            handler_synthese,
+        )
+    )
 
     # Réception fichier Excel rempli par un directeur
     application.add_handler(
