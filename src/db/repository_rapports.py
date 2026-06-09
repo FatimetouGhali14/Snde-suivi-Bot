@@ -294,3 +294,93 @@ def alerte_deja_envoyee(instruction_id: int, type_alerte: str) -> bool:
     )
     count = cursor.fetchone()[0]
     return count > 0
+
+def enregistrer_rapport(
+    directeur_uuid: str,
+    contenu: str,
+    instruction_id: int | None = None,
+    telegram_file_id: str | None = None,
+    nom_fichier: str | None = None,
+) -> dict:
+    """
+    Enregistre le rapport d'un directeur avec versionnage.
+    
+    Logique :
+    - Si c'est le premier rapport du jour pour ce directeur : version = 1
+    - Si un rapport existe déjà : marque l'ancien comme inactif et 
+      incrémente la version
+    
+    Returns:
+        dict avec id, statut, avant_21h, version, est_correction
+    """
+    conn = get_connexion()
+    cursor = conn.cursor()
+    maintenant = datetime.now()
+    avant_21h = maintenant.hour < 21
+    statut = "a_l_heure" if avant_21h else "en_retard"
+    
+    # 1. Désactiver les versions précédentes du jour
+    cursor.execute(
+        """
+        UPDATE rapports_quotidiens
+        SET est_actif = FALSE
+        WHERE directeur_uuid = %s
+          AND date_rapport = CURRENT_DATE
+          AND est_actif = TRUE
+        """,
+        (directeur_uuid,),
+    )
+    nb_anciennes = cursor.rowcount
+    
+    # 2. Calculer la nouvelle version
+    cursor.execute(
+        """
+        SELECT COALESCE(MAX(version), 0) + 1
+        FROM rapports_quotidiens
+        WHERE directeur_uuid = %s
+          AND date_rapport = CURRENT_DATE
+        """,
+        (directeur_uuid,),
+    )
+    nouvelle_version = cursor.fetchone()[0]
+    est_correction = nouvelle_version > 1
+    
+    # 3. Insérer la nouvelle version active
+    cursor.execute(
+        """
+        INSERT INTO rapports_quotidiens
+            (instruction_id, directeur_uuid, contenu,
+             date_rapport, heure_envoi, statut, envoye_avant_21h,
+             telegram_file_id, nom_fichier,
+             version, est_actif)
+        VALUES (%s, %s, %s, CURRENT_DATE, NOW(), %s, %s, %s, %s, %s, TRUE)
+        RETURNING id, statut, envoye_avant_21h
+        """,
+        (
+            instruction_id, directeur_uuid, contenu,
+            statut, avant_21h,
+            telegram_file_id, nom_fichier,
+            nouvelle_version,
+        ),
+    )
+    conn.commit()
+    row = cursor.fetchone()
+    
+    if est_correction:
+        logger.info(
+            "Rapport CORRIGE (v%s) - directeur %s, %s anciennes versions desactivees",
+            nouvelle_version, directeur_uuid, nb_anciennes,
+        )
+    else:
+        logger.info(
+            "Rapport v1 enregistre - directeur %s, statut %s",
+            directeur_uuid, statut,
+        )
+    
+    return {
+        "id": row[0],
+        "statut": row[1],
+        "avant_21h": row[2],
+        "version": nouvelle_version,
+        "est_correction": est_correction,
+    }

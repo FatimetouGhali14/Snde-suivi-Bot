@@ -69,13 +69,16 @@ async def handler_rapport(
         )
         return
 
-    # Enregistrer le rapport en BD
-    uuid_directeur = directeur.get("id", "")
-    rapport = enregistrer_rapport(
-        instruction_id = instruction["id"],
-        directeur_uuid = str(uuid_directeur),
-        contenu        = contenu,
-    )
+    enregistrer_rapport(
+            directeur_uuid=str(directeur["id"]),
+            contenu=(
+                f"{verification['remplis']}/{verification['total']} "
+                f"colonnes remplies"
+            ),
+            instruction_id=instruction_id,
+            telegram_file_id=document.file_id,
+            nom_fichier=document.file_name,
+        )
 
     # Mettre à jour le statut de l'instruction
     mettre_a_jour_statut(instruction["id"], "fait")

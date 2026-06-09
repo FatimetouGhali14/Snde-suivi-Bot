@@ -5,7 +5,8 @@ Handlers de réception de fichiers Excel.
 - handler_excel : le DG envoie un fichier multi-onglets, le bot dispatch
   aux directeurs (workflow actuellement non utilisé mais conservé).
 - handler_rapport_excel : un directeur envoie son rapport rempli, le bot
-  parse, sauvegarde en BD, et notifie le DG (forward + tableau de bord).
+  parse, sauvegarde en BD avec versionnage (renvoi correctif possible),
+  et notifie le DG (forward + tableau de bord).
 """
 from __future__ import annotations
 
@@ -120,7 +121,6 @@ async def handler_excel(
 
         os.unlink(chemin_tmp)
 
-        # Récapitulatif au DG
         recap = (
             f"DISTRIBUTION TERMINEE\n"
             f"--------------------------------\n"
@@ -153,8 +153,10 @@ async def handler_rapport_excel(
 ) -> None:
     """
     Un directeur renvoie son onglet Excel rempli.
-    Le bot extrait les colonnes et sauvegarde en BD.
-    Puis notifie le DG (forward + tableau de bord).
+    
+    - Parse le fichier
+    - Enregistre en BD avec versionnage (renvoi correctif possible)
+    - Notifie le DG (forward + tableau de bord)
     """
     chat_id = update.effective_chat.id
     document = update.message.document
@@ -197,7 +199,7 @@ async def handler_rapport_excel(
         verification = verifier_kpis_remplis(rapport)
         statut_heure = "A L'HEURE" if avant_21h else "EN RETARD"
 
-        # Enregistrer le rapport (toujours, même sans instruction)
+        # Rechercher une instruction "en_attente" pour cette direction
         conn = get_connexion()
         cursor = conn.cursor()
         cursor.execute(
@@ -208,22 +210,32 @@ async def handler_rapport_excel(
         row = cursor.fetchone()
         instruction_id = row[0] if row else None
 
-        enregistrer_rapport(
+        # Enregistrer le rapport (avec versionnage automatique)
+        resultat = enregistrer_rapport(
             directeur_uuid=str(directeur["id"]),
             contenu=(
                 f"{verification['remplis']}/{verification['total']} "
                 f"colonnes remplies"
             ),
             instruction_id=instruction_id,
+            telegram_file_id=document.file_id,
+            nom_fichier=document.file_name,
         )
+        version = resultat["version"]
+        est_correction = resultat["est_correction"]
 
         # Si une instruction etait en attente, la marquer comme faite
         if instruction_id:
             mettre_a_jour_statut(instruction_id, "fait")
 
-        # Confirmation au directeur
+        # Confirmation au directeur (avec mention si correction)
+        if est_correction:
+            entete = f"Rapport CORRIGE (version {version})"
+        else:
+            entete = "Rapport enregistre"
+
         await update.message.reply_text(
-            f"Rapport enregistre\n"
+            f"{entete}\n"
             f"--------------------------------\n"
             f"Direction : {directeur['direction_code']}\n"
             f"Colonnes remplies : "
@@ -246,11 +258,12 @@ async def handler_rapport_excel(
                 ),
             )
 
-        # Phase test : forward systematique du rapport au DG
+        # Phase test : forward systematique au DG
+        type_envoi = f"Rapport CORRIGE v{version}" if est_correction else "Rapport recu"
         await context.bot.send_message(
             chat_id=settings.dg_chat_id,
             text=(
-                f"Rapport recu de :\n"
+                f"{type_envoi} de :\n"
                 f"Direction : {directeur['direction_code']}\n"
                 f"Nom : {directeur['nom_complet']}\n"
                 f"Heure : {maintenant.strftime('%H:%M')}\n"
@@ -267,6 +280,7 @@ async def handler_rapport_excel(
             caption=(
                 f"Rapport {directeur['direction_code']} "
                 f"du {maintenant.strftime('%d/%m/%Y')}"
+                f"{' (v' + str(version) + ')' if est_correction else ''}"
             ),
         )
 
