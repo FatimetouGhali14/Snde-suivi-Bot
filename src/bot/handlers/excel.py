@@ -1,34 +1,50 @@
-# src/bot/handlers/excel.py
-# Handler réception fichier Excel du DG + distribution aux directeurs
+"""
+src/bot/handlers/excel.py
+Handlers de réception de fichiers Excel.
 
+- handler_excel : le DG envoie un fichier multi-onglets, le bot dispatch
+  aux directeurs (workflow actuellement non utilisé mais conservé).
+- handler_rapport_excel : un directeur envoie son rapport rempli, le bot
+  parse, sauvegarde en BD, et notifie le DG (forward + tableau de bord).
+"""
 from __future__ import annotations
+
 import logging
 import os
 import tempfile
+from datetime import date, datetime
+
 from telegram import Update
 from telegram.ext import ContextTypes
+
 from src.core.config import settings
+from src.db.pool import get_connexion
+from src.db.repository_directeurs import lister_tous, trouver_par_chat_id
+from src.db.repository_rapports import enregistrer_rapport, mettre_a_jour_statut
 from src.parsers.excel_parser import (
-    lire_fichier_complet,
-    extraire_onglet_vers_bytes,
     ONGLETS_DIRECTIONS,
+    extraire_onglet_vers_bytes,
+    lire_onglet_pour_direction,
+    verifier_kpis_remplis,
 )
-from src.db.repository_directeurs import lister_tous
+from src.services.synthese import mettre_a_jour_synthese_dg
 
 logger = logging.getLogger(__name__)
 
 
 async def handler_excel(
-    update  : Update,
-    context : ContextTypes.DEFAULT_TYPE
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
     """
     Le DG envoie le fichier Excel.
     Le bot distribue l'onglet de chaque directeur.
+    
+    Note : ce handler n'est plus actif dans main.py (workflow abandonné).
+    Conservé pour référence ou usage futur.
     """
     chat_id = update.effective_chat.id
 
-    # Vérifier que c'est le DG
     if chat_id != settings.dg_chat_id:
         await update.message.reply_text(
             "Acces refuse.\n"
@@ -42,128 +58,108 @@ async def handler_excel(
 
     nom_fichier = document.file_name or ""
     if not nom_fichier.endswith((".xlsx", ".xls")):
-        await update.message.reply_text(
-            "Envoyez un fichier Excel (.xlsx)"
-        )
+        await update.message.reply_text("Envoyez un fichier Excel (.xlsx)")
         return
 
-    # Confirmer réception
-    msg = await update.message.reply_text(
+    await update.message.reply_text(
         f"Fichier recu : {nom_fichier}\n"
         "Distribution en cours aux 12 directions..."
     )
 
     try:
-        # Télécharger le fichier
         fichier = await context.bot.get_file(document.file_id)
-        with tempfile.NamedTemporaryFile(
-            suffix=".xlsx", delete=False
-        ) as tmp:
+        with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp:
             chemin_tmp = tmp.name
         await fichier.download_to_drive(chemin_tmp)
 
-        # Récupérer les directeurs en BD
         directeurs = lister_tous()
-        directeurs_par_code = {
-            d["direction_code"]: d for d in directeurs
-        }
+        directeurs_par_code = {d["direction_code"]: d for d in directeurs}
 
-        # Distribuer chaque onglet
-        envoyes  = []
+        envoyes = []
         manquants = []
 
         for code_onglet, nom_direction in ONGLETS_DIRECTIONS.items():
             directeur = directeurs_par_code.get(code_onglet)
 
             if not directeur:
-                manquants.append(f"{code_onglet} — directeur non enregistré")
+                manquants.append(f"{code_onglet} - directeur non enregistre")
                 continue
 
             if not directeur.get("telegram_chat_id"):
-                manquants.append(f"{code_onglet} — pas de Telegram ID")
+                manquants.append(f"{code_onglet} - pas de Telegram ID")
                 continue
 
             try:
-                # Extraire l'onglet en bytes
-                onglet_bytes = extraire_onglet_vers_bytes(
-                    chemin_tmp, code_onglet
-                )
+                onglet_bytes = extraire_onglet_vers_bytes(chemin_tmp, code_onglet)
+                date_str = date.today().strftime("%Y%m%d")
+                nom_envoi = f"Rapport_{code_onglet}_{date_str}.xlsx"
 
-                # Nom du fichier à envoyer
-                from datetime import date
-                date_str   = date.today().strftime("%Y%m%d")
-                nom_envoi  = f"Rapport_{code_onglet}_{date_str}.xlsx"
-
-                # Envoyer au directeur
                 await context.bot.send_document(
-                    chat_id  = directeur["telegram_chat_id"],
-                    document = onglet_bytes,
-                    filename = nom_envoi,
-                    caption  = (
-                        f"📋 RAPPORT JOURNALIER — {nom_direction}\n"
-                        f"━━━━━━━━━━━━━━━━\n"
+                    chat_id=directeur["telegram_chat_id"],
+                    document=onglet_bytes,
+                    filename=nom_envoi,
+                    caption=(
+                        f"RAPPORT JOURNALIER - {nom_direction}\n"
+                        f"--------------------------------\n"
                         f"Date : {date.today().strftime('%d/%m/%Y')}\n\n"
-                        f"Remplissez vos 8 KPIs et renvoyez\n"
-                        f"ce fichier avant 22h00.\n\n"
-                        f"⚠️ Deadline : 22h00 ce soir"
-                    )
+                        f"Remplissez vos 8 colonnes et renvoyez\n"
+                        f"ce fichier avant 21h00.\n\n"
+                        f"Deadline : 21h00 ce soir"
+                    ),
                 )
-                envoyes.append(f"{code_onglet} — {nom_direction}")
-                logger.info(f"Onglet {code_onglet} envoyé à {directeur['telegram_chat_id']}")
+                envoyes.append(f"{code_onglet} - {nom_direction}")
+                logger.info(
+                    "Onglet %s envoye a %s",
+                    code_onglet,
+                    directeur["telegram_chat_id"],
+                )
 
             except Exception as e:
-                logger.error(f"Erreur envoi {code_onglet} : {e}")
-                manquants.append(f"{code_onglet} — erreur : {e}")
+                logger.error("Erreur envoi %s : %s", code_onglet, e)
+                manquants.append(f"{code_onglet} - erreur : {e}")
 
-        # Supprimer fichier temporaire
         os.unlink(chemin_tmp)
 
         # Récapitulatif au DG
         recap = (
-            f"✅ DISTRIBUTION TERMINEE\n"
-            f"━━━━━━━━━━━━━━━━\n"
-            f"Envoyés  : {len(envoyes)}/12\n"
+            f"DISTRIBUTION TERMINEE\n"
+            f"--------------------------------\n"
+            f"Envoyes  : {len(envoyes)}/12\n"
             f"Problemes: {len(manquants)}\n"
-            f"━━━━━━━━━━━━━━━━\n"
+            f"--------------------------------\n"
         )
 
         if envoyes:
-            recap += "Directions notifiées :\n"
+            recap += "Directions notifiees :\n"
             for e in envoyes:
-                recap += f"  ✓ {e}\n"
+                recap += f"  - {e}\n"
 
         if manquants:
-            recap += "\nProblèmes :\n"
+            recap += "\nProblemes :\n"
             for m in manquants:
-                recap += f"  ✗ {m}\n"
+                recap += f"  - {m}\n"
 
-        recap += "\nLes directeurs ont jusqu'à 22h pour renvoyer leur rapport."
+        recap += "\nLes directeurs ont jusqu'a 21h pour renvoyer leur rapport."
         await update.message.reply_text(recap)
 
     except Exception as e:
-        logger.error(f"Erreur traitement Excel : {e}")
-        await update.message.reply_text(
-            f"Erreur lors du traitement : {e}"
-        )
+        logger.error("Erreur traitement Excel : %s", e, exc_info=True)
+        await update.message.reply_text(f"Erreur lors du traitement : {e}")
 
 
 async def handler_rapport_excel(
-    update  : Update,
-    context : ContextTypes.DEFAULT_TYPE
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
     """
     Un directeur renvoie son onglet Excel rempli.
-    Le bot extrait les KPIs et sauvegarde en BD.
+    Le bot extrait les colonnes et sauvegarde en BD.
+    Puis notifie le DG (forward + tableau de bord).
     """
-    from src.db.repository_directeurs import trouver_par_chat_id
-    from src.db.repository_rapports import enregistrer_rapport
-    from src.parsers.excel_parser import lire_fichier_complet, verifier_kpis_remplis
-    from datetime import datetime
-
-    chat_id   = update.effective_chat.id
-    document  = update.message.document
+    chat_id = update.effective_chat.id
+    document = update.message.document
     maintenant = datetime.now()
-    avant_21h  = maintenant.hour < 21
+    avant_21h = maintenant.hour < 21
 
     if not document or not (document.file_name or "").endswith(".xlsx"):
         return
@@ -172,11 +168,11 @@ async def handler_rapport_excel(
     directeur = trouver_par_chat_id(chat_id)
     if not directeur:
         await update.message.reply_text(
-            "Vous n'etes pas enregistré dans le système."
+            "Vous n'etes pas enregistre dans le systeme."
         )
         return
 
-    await update.message.reply_text("Rapport reçu — traitement en cours...")
+    await update.message.reply_text("Rapport recu - traitement en cours...")
 
     try:
         # Télécharger le fichier rempli
@@ -185,70 +181,75 @@ async def handler_rapport_excel(
             chemin_tmp = tmp.name
         await fichier.download_to_drive(chemin_tmp)
 
-        # Lire le rapport
-        rapports = lire_fichier_complet(chemin_tmp)
-        os.unlink(chemin_tmp)
-
+        # Lire le rapport (auto-détection mono ou multi-onglets)
         code = directeur["direction_code"]
-        rapport = rapports.get(code)
+        rapport = lire_onglet_pour_direction(chemin_tmp, code)
+        os.unlink(chemin_tmp)
 
         if not rapport:
             await update.message.reply_text(
-                f"Onglet {code} introuvable dans votre fichier."
+                f"Onglet {code} introuvable dans votre fichier.\n"
+                f"Verifiez que vous envoyez bien le bon modele."
             )
             return
 
-        # Vérifier les KPIs remplis
+        # Vérifier les colonnes remplies
         verification = verifier_kpis_remplis(rapport)
+        statut_heure = "A L'HEURE" if avant_21h else "EN RETARD"
 
-        # Enregistrer en BD
-        from src.db.pool import get_connexion
-        conn   = get_connexion()
+        # Enregistrer en BD (si une instruction "en_attente" existe)
+        conn = get_connexion()
         cursor = conn.cursor()
         cursor.execute(
             "SELECT id FROM public.instructions WHERE direction_code = %s "
             "AND statut_reponse = 'en_attente' LIMIT 1",
-            (code,)
+            (code,),
         )
         row = cursor.fetchone()
 
         if row:
             instruction_id = row[0]
-            rapport_bd = enregistrer_rapport(
-                instruction_id = instruction_id,
-                directeur_uuid = str(directeur["id"]),
-                contenu        = f"{verification['remplis']}/{verification['total']} KPIs remplis",
+            enregistrer_rapport(
+                instruction_id=instruction_id,
+                directeur_uuid=str(directeur["id"]),
+                contenu=(
+                    f"{verification['remplis']}/{verification['total']} "
+                    f"colonnes remplies"
+                ),
+            )
+            mettre_a_jour_statut(instruction_id, "fait")
+        else:
+            logger.warning(
+                "Pas d'instruction en_attente pour %s - rapport non sauvegarde",
+                code,
             )
 
-            # Mettre à jour statut instruction
-            from src.db.repository_rapports import mettre_a_jour_statut
-            mettre_a_jour_statut(instruction_id, "fait")
-
         # Confirmation au directeur
-        statut_heure = "A L'HEURE" if avant_21h else "EN RETARD"
         await update.message.reply_text(
-            f"Rapport enregistré\n"
-            f"━━━━━━━━━━━━━━━━\n"
+            f"Rapport enregistre\n"
+            f"--------------------------------\n"
             f"Direction : {directeur['direction_code']}\n"
-            f"KPIs remplis : {verification['remplis']}/{verification['total']}\n"
+            f"Colonnes remplies : "
+            f"{verification['remplis']}/{verification['total']}\n"
             f"Heure : {maintenant.strftime('%H:%M')}\n"
             f"Statut : {statut_heure}"
         )
 
-        # Notifier DG si retard
+        # Notification spéciale au DG si retard
         if not avant_21h:
             retard = (maintenant.hour - 21) * 60 + maintenant.minute
             await context.bot.send_message(
-                chat_id = settings.dg_chat_id,
-                text    = (
-                    f"📬 Rapport tardif reçu\n"
+                chat_id=settings.dg_chat_id,
+                text=(
+                    f"Rapport tardif recu\n"
                     f"Direction : {directeur['direction_code']}\n"
                     f"Nom : {directeur['nom_complet']}\n"
                     f"Retard : {retard} minutes\n"
-                    f"KPIs : {verification['remplis']}/{verification['total']}"
-                )
+                    f"Colonnes : {verification['remplis']}/{verification['total']}"
+                ),
             )
-    # Phase test : forwarder le rapport au DG à chaque envoi
+
+        # Phase test : forward systematique du rapport au DG
         await context.bot.send_message(
             chat_id=settings.dg_chat_id,
             text=(
@@ -257,16 +258,27 @@ async def handler_rapport_excel(
                 f"Nom : {directeur['nom_complet']}\n"
                 f"Heure : {maintenant.strftime('%H:%M')}\n"
                 f"Statut : {statut_heure}\n"
-                f"KPIs remplis : {verification['remplis']}/{verification['total']}"
-            )
+                f"Colonnes remplies : "
+                f"{verification['remplis']}/{verification['total']}"
+            ),
         )
-        
+
         # Transferer aussi le fichier Excel au DG
         await context.bot.send_document(
             chat_id=settings.dg_chat_id,
             document=document.file_id,
-            caption=f"Rapport {directeur['direction_code']} du {maintenant.strftime('%d/%m/%Y')}"
+            caption=(
+                f"Rapport {directeur['direction_code']} "
+                f"du {maintenant.strftime('%d/%m/%Y')}"
+            ),
         )
+
+        # Mettre a jour le tableau de bord DG
+        await mettre_a_jour_synthese_dg(
+            bot=context.bot,
+            chat_id_dg=settings.dg_chat_id,
+        )
+
     except Exception as e:
-        logger.error(f"Erreur rapport directeur : {e}")
+        logger.error("Erreur rapport directeur : %s", e, exc_info=True)
         await update.message.reply_text(f"Erreur : {e}")

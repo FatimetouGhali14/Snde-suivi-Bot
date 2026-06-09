@@ -186,3 +186,62 @@ def verifier_kpis_remplis(rapport: RapportDirection) -> dict:
         "manquants": total - remplis,
         "complet" : remplis >= total * 0.75,
     }
+       
+def lire_onglet_pour_direction(
+    chemin: str | Path,
+    direction_code: str,
+) -> RapportDirection | None:
+    """
+    Lit le bon onglet pour une direction donnée.
+    
+    Logique de détection :
+    - Si le fichier contient 1 seul onglet : on le parse comme étant
+      l'onglet de cette direction (cas du modèle personnalisé).
+    - Si le fichier contient plusieurs onglets : on cherche celui qui
+      porte le code de la direction (ex: 'PROD').
+    
+    Args:
+        chemin: Chemin vers le fichier Excel à parser.
+        direction_code: Code de la direction du directeur (ex: 'PROD').
+    
+    Returns:
+        Le rapport parsé, ou None si l'onglet est introuvable.
+    """
+    chemin = Path(chemin)
+    if not chemin.exists():
+        raise FileNotFoundError(f"Fichier introuvable : {chemin}")
+
+    wb = openpyxl.load_workbook(chemin, data_only=True)
+
+    try:
+        nom_direction = ONGLETS_DIRECTIONS.get(direction_code, direction_code)
+
+        # Cas 1 : un seul onglet dans le fichier
+        if len(wb.sheetnames) == 1:
+            ws = wb[wb.sheetnames[0]]
+            logger.info(
+                "Fichier mono-onglet detecte : '%s' -> parse comme %s",
+                wb.sheetnames[0],
+                direction_code,
+            )
+            return extraire_rapport_direction(ws, direction_code, nom_direction)
+
+        # Cas 2 : plusieurs onglets, on cherche celui de la direction
+        if direction_code in wb.sheetnames:
+            ws = wb[direction_code]
+            logger.info(
+                "Fichier multi-onglets : onglet '%s' trouve",
+                direction_code,
+            )
+            return extraire_rapport_direction(ws, direction_code, nom_direction)
+
+        # Cas 3 : onglet introuvable
+        logger.warning(
+            "Onglet %s introuvable dans le fichier. Onglets presents : %s",
+            direction_code,
+            wb.sheetnames,
+        )
+        return None
+
+    finally:
+        wb.close()
