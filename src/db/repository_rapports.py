@@ -98,10 +98,52 @@ def mettre_a_jour_statut(instruction_id: int, statut: str) -> None:
 # ── RAPPORTS QUOTIDIENS ────────────────────────────
 
 def enregistrer_rapport(
-    instruction_id  : int,
-    directeur_uuid  : str,
-    contenu         : str,
+    directeur_uuid: str,
+    contenu: str,
+    instruction_id: int | None = None,
 ) -> dict:
+    """
+    Enregistre le rapport d'un directeur.
+    Détermine automatiquement avant ou après 21h.
+    
+    Args:
+        directeur_uuid: UUID du directeur (depuis directeurs.id)
+        contenu: Description du rapport (ex: "5/8 colonnes remplies")
+        instruction_id: Optionnel — liaison à une instruction du DG
+    
+    Returns:
+        dict avec id, statut, avant_21h
+    """
+    conn = get_connexion()
+    cursor = conn.cursor()
+    maintenant = datetime.now()
+    avant_21h = maintenant.hour < 21
+    statut = "a_l_heure" if avant_21h else "en_retard"
+
+    cursor.execute(
+        """
+        INSERT INTO rapports_quotidiens
+            (instruction_id, directeur_uuid, contenu,
+             date_rapport, heure_envoi, statut, envoye_avant_21h)
+        VALUES (%s, %s, %s, CURRENT_DATE, NOW(), %s, %s)
+        RETURNING id, statut, envoye_avant_21h
+        """,
+        (instruction_id, directeur_uuid, contenu, statut, avant_21h),
+    )
+    conn.commit()
+    row = cursor.fetchone()
+
+    logger.info(
+        "Rapport enregistre - directeur %s, instruction %s, statut %s",
+        directeur_uuid,
+        instruction_id if instruction_id else "(aucune)",
+        statut,
+    )
+    return {
+        "id": row[0],
+        "statut": row[1],
+        "avant_21h": row[2],
+    }
     """
     Enregistre le rapport d'un directeur.
     Détermine automatiquement avant ou après 21h.

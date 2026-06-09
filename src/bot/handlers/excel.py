@@ -197,7 +197,7 @@ async def handler_rapport_excel(
         verification = verifier_kpis_remplis(rapport)
         statut_heure = "A L'HEURE" if avant_21h else "EN RETARD"
 
-        # Enregistrer en BD (si une instruction "en_attente" existe)
+        # Enregistrer le rapport (toujours, même sans instruction)
         conn = get_connexion()
         cursor = conn.cursor()
         cursor.execute(
@@ -206,23 +206,20 @@ async def handler_rapport_excel(
             (code,),
         )
         row = cursor.fetchone()
+        instruction_id = row[0] if row else None
 
-        if row:
-            instruction_id = row[0]
-            enregistrer_rapport(
-                instruction_id=instruction_id,
-                directeur_uuid=str(directeur["id"]),
-                contenu=(
-                    f"{verification['remplis']}/{verification['total']} "
-                    f"colonnes remplies"
-                ),
-            )
+        enregistrer_rapport(
+            directeur_uuid=str(directeur["id"]),
+            contenu=(
+                f"{verification['remplis']}/{verification['total']} "
+                f"colonnes remplies"
+            ),
+            instruction_id=instruction_id,
+        )
+
+        # Si une instruction etait en attente, la marquer comme faite
+        if instruction_id:
             mettre_a_jour_statut(instruction_id, "fait")
-        else:
-            logger.warning(
-                "Pas d'instruction en_attente pour %s - rapport non sauvegarde",
-                code,
-            )
 
         # Confirmation au directeur
         await update.message.reply_text(
